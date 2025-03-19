@@ -7,6 +7,8 @@ from datetime import timedelta
 import ssl
 import certifi # type: ignore
 import json
+import subprocess
+
 def extract_audio_from_video(video_path, audio_output_path):
     # Extract audio from video and save as MP3
     video = VideoFileClip(video_path) # type: ignore
@@ -34,25 +36,17 @@ def transcribe_audio_to_text_with_timestamps(audio_path, model_size='medium', ve
         model = whisper.load_model(model_size)
         
         # Transcribe audio
-        result = model.transcribe(audio_path, word_timestamps=True)
+        result = model.transcribe(audio_path)
         
         # Format results to match your existing structure
         transcript_with_timestamps = []
-        word_level_timestamps = []  # New list for word-level timestamps
         
         for segment in result['segments']:
             transcript_with_timestamps.append(
                 (segment['text'], (segment['start'], segment['end']))
             )
-            # Store word-level timestamps
-            for word in segment["words"]:
-                word_level_timestamps.append({
-                    'word': word['word'],
-                    'start': word['start'],
-                    'end': word['end']
-                })
         
-        return transcript_with_timestamps, word_level_timestamps
+        return transcript_with_timestamps
         
     except Exception as e:
         print(f"Error during transcription: {str(e)}")
@@ -94,6 +88,12 @@ def get_viral_moments_from_mistral(transcript_with_timestamps):
     1. Les segments doivent durer entre 10 secondes et 2 minutes 40 secondes.
     2. Privilégie la qualité à la quantité
     3. Les moments doivent susciter des réactions fortes sur les réseaux sociaux.
+    4. Tu ne dois couper des phrases ou mots.
+    5. La fin de la vidéo doit être un end time du timestamp fourni.
+    6. CRITIQUE : Les moments viraux DOIVENT commencer et finir exactement aux timestamps de la transcription fournie. 
+       Tu ne peux PAS choisir des timestamps qui coupent au milieu d'un segment de transcription.
+       Utilise UNIQUEMENT les timestamps de début et de fin qui sont fournis dans la transcription.
+       Aussi ne pas couper des phrases ou mots, la phrase doit finir sur un point de suspension ou un point.
 
     Retourne STRICTEMENT une liste de timestamps au format suivant, un par ligne :
     START_TIME|END_TIME
@@ -108,7 +108,7 @@ def get_viral_moments_from_mistral(transcript_with_timestamps):
     try:
         response = requests.post('http://localhost:11434/api/generate', 
                                json={
-                                   "model": "mistral",
+                                   "model": "mixtral",
                                    "prompt": prompt,
                                    "stream": False
                                })
@@ -186,7 +186,7 @@ def main(video_path, output_folder, model_size='medium'):
         convert_mp3_to_wav(mp3_path, wav_path)
         
         print("Transcribing audio with Whisper...")
-        transcript_with_timestamps, word_level_timestamps = transcribe_audio_to_text_with_timestamps(wav_path, model_size)
+        transcript_with_timestamps = transcribe_audio_to_text_with_timestamps(wav_path, model_size)
         
         print("\nTranscription with timestamps:")
             
@@ -195,18 +195,24 @@ def main(video_path, output_folder, model_size='medium'):
         print("\nIdentifying viral moments using local Mistral model...")
         viral_moments = get_viral_moments_from_mistral(transcript_with_timestamps)
         
-        with open(os.path.join(output_folder, "word_level_timestamps.json"), "w") as f:
-            json.dump(word_level_timestamps, f)
-            for index, (start_timecode, end_timecode) in enumerate(viral_moments):
-                print(start_timecode, end_timecode)
-                output_video_path = os.path.join(output_folder, f"viral_moment_{index + 1}.mp4")
-                print(f"\nExtracting viral moment {index + 1}...")
-                print(f"Timestamp: {start_timecode} - {end_timecode}")
-                extract_viral_moment(video_path, start_timecode, end_timecode, output_video_path)
-                print(f"Viral video {index + 1} saved to {output_video_path}")
 
-        # 2. for each video generated, print the path
-        print(f"Viral moment {index + 1} saved to {output_video_path}")
+        for index, (start_timecode, end_timecode) in enumerate(viral_moments):
+            output_video_path = os.path.join(output_folder, f"viral_moment.mp4")
+            extract_viral_moment(video_path, start_timecode, end_timecode, output_video_path)
+            print(f"Viral video {index + 1} saved to {output_video_path}")
+            try:
+                command = f"cd test && node sub.mjs && npx remotion render src/index.ts CaptionedVideo ../output/video{index + 1}.mp4 && rm -rf public/viral_moment.json && rm -rf public/viral_moment.mp4"
+                result = subprocess.run(
+                    command,
+                    capture_output=True,
+                    text=True,
+                    shell=True
+                )
+                print("Subprocess output:", result.stdout)
+                if result.stderr:
+                    print("Subprocess errors:", result.stderr)
+            except Exception as e:
+                print(f"Error running subprocess: {str(e)}")
 
         # Clean up temporary audio files
         os.remove(mp3_path)
@@ -220,5 +226,5 @@ def main(video_path, output_folder, model_size='medium'):
 
 if __name__ == "__main__":
     video_path = "test.mp4"
-    output_folder = "output"
+    output_folder = "test/public/"
     main(video_path, output_folder, model_size='medium')

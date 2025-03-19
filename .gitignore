@@ -1,0 +1,5 @@
+/output/*
+/output
+test.mp4
+.DS_Store
+test/node_modules
